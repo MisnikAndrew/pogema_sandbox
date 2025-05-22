@@ -3,13 +3,14 @@ from pogema.envs import Pogema
 import numpy as np
 from pogema.envs import GridConfig
 import gymnasium
+from pogema.integrations.sample_factory import AutoResetWrapper, IsMultiAgentWrapper, MetricsForwardingWrapper
 
 class PogemaBox(Pogema):
-    def __init__(self, grid_config=GridConfig(num_agents=3), num_boxes=1, integration = None):  # Default to 1 box and 2 agents
+    def base_construct(self, grid_config=GridConfig(num_agents=3), num_boxes=1):  # Default to 1 box and 2 agents
         super().__init__(grid_config)
         if num_boxes >= grid_config.num_agents:
             raise ValueError("Number of boxes must be less than total number of agents")
-            
+        
         self.box_agent_indices = list(range(num_boxes))  # First num_boxes agents are boxes
         self.agent_indices = list(range(num_boxes, self.grid_config.num_agents))  # Rest are actual agents
         
@@ -33,6 +34,20 @@ class PogemaBox(Pogema):
                 xy=gymnasium.spaces.Box(low=-1024, high=1024, shape=(2,), dtype=int),
                 target_xy=gymnasium.spaces.Box(low=-1024, high=1024, shape=(2,), dtype=int),
             )
+
+    def __init__(self, grid_config=GridConfig(num_agents=3), num_boxes=1, integration = None):
+        self.base_construct(grid_config, num_boxes)
+        if integration is not None:
+            if integration == 'SampleFactory':
+                env = PogemaBox(grid_config, num_boxes)
+                env = MetricsForwardingWrapper(env)
+                env = IsMultiAgentWrapper(env)
+                if grid_config.auto_reset is None or grid_config.auto_reset:
+                    env = AutoResetWrapper(env)
+                self = env
+                print('built sample factory pogema')
+            else:
+                raise KeyError(integration)
 
     def _get_adjacent_agents(self, box_pos):
         """Get agents that are adjacent to the box position."""
@@ -275,3 +290,7 @@ class PogemaBox(Pogema):
             }
             results.append(result)
         return results
+    
+def SampleFactoryPogemaBox(grid_config, num_boxes=1):
+    env = PogemaBox(grid_config, num_boxes, integration='SampleFactory')
+    return env

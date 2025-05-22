@@ -35,6 +35,20 @@ class PogemaBox(Pogema):
                 xy=gymnasium.spaces.Box(low=-1024, high=1024, shape=(2,), dtype=int),
                 target_xy=gymnasium.spaces.Box(low=-1024, high=1024, shape=(2,), dtype=int),
             )
+        
+    def __init__(self, grid_config=GridConfig(num_agents=3), num_boxes=1, integration = None):
+        self.base_construct(grid_config, num_boxes)
+        if integration is not None:
+            if integration == 'SampleFactory':
+                env = PogemaBox(grid_config, num_boxes)
+                env = MetricsForwardingWrapper(env)
+                env = IsMultiAgentWrapper(env)
+                if grid_config.auto_reset is None or grid_config.auto_reset:
+                    env = AutoResetWrapper(env)
+                self = env
+                print('built sample factory pogema')
+            else:
+                raise KeyError(integration)
 
     def _get_adjacent_agents(self, box_pos):
         """Get agents that are adjacent to the box position."""

@@ -11,8 +11,9 @@ class PogemaBox(Pogema):
         if num_boxes >= grid_config.num_agents:
             raise ValueError("Number of boxes must be less than total number of agents")
         
-        self.box_agent_indices = list(range(num_boxes))  # First num_boxes agents are boxes
-        self.agent_indices = list(range(num_boxes, self.grid_config.num_agents))  # Rest are actual agents
+        self.agent_indices = list(range(0, self.grid_config.num_agents - num_boxes))
+        self.box_agent_indices = list(range(self.grid_config.num_agents - num_boxes, self.grid_config.num_agents))  # First num_boxes agents are boxes
+        # self.agent_indices = list(range(num_boxes, self.grid_config.num_agents))  # Rest are actual agents
         
         # Modify observation space to include box channel
         full_size = self.grid_config.obs_radius * 2 + 1
@@ -35,157 +36,144 @@ class PogemaBox(Pogema):
                 target_xy=gymnasium.spaces.Box(low=-1024, high=1024, shape=(2,), dtype=int),
             )
 
-    def __init__(self, grid_config=GridConfig(num_agents=3), num_boxes=1, integration = None):
-        self.base_construct(grid_config, num_boxes)
-        if integration is not None:
-            if integration == 'SampleFactory':
-                env = PogemaBox(grid_config, num_boxes)
-                env = MetricsForwardingWrapper(env)
-                env = IsMultiAgentWrapper(env)
-                if grid_config.auto_reset is None or grid_config.auto_reset:
-                    env = AutoResetWrapper(env)
-                self = env
-                print('built sample factory pogema')
-            else:
-                raise KeyError(integration)
-
     def _get_adjacent_agents(self, box_pos):
         """Get agents that are adjacent to the box position."""
-        adjacent_agents = []
-        for agent_idx in self.agent_indices:
-            if not self.grid.is_active[agent_idx]:
-                continue
-            agent_pos = self.grid.positions_xy[agent_idx]
-            if abs(agent_pos[0] - box_pos[0]) + abs(agent_pos[1] - box_pos[1]) == 1:  # Manhattan distance = 1
-                adjacent_agents.append(agent_idx)
-        return adjacent_agents
+        up_agent = None
+        down_agent = None
+        left_agent = None
+        right_agent = None
 
-    def _can_move_box(self, box_pos, actions):
-        """Check if box can be moved based on adjacent agents' actions."""
-        # Get agents adjacent to box
-        adjacent_agents = self._get_adjacent_agents(box_pos)
-        if len(adjacent_agents) < 2:
-            return False, 0  # Return False and no-op action
-            
-        # Get actions of adjacent agents
-        adjacent_actions = [actions[idx] for idx in adjacent_agents]
+        for agent_idx in self.agent_indices:
+            agent_pos = self.grid.positions_xy[agent_idx]
+            # up
+            if (agent_pos[0] == (box_pos[0] - 1)) and agent_pos[1] == box_pos[1]:
+                up_agent = agent_idx
+            # down
+            elif (agent_pos[0] == (box_pos[0] + 1)) and agent_pos[1] == box_pos[1]:
+                down_agent = agent_idx
+            # left
+            elif (agent_pos[0] == box_pos[0]) and (agent_pos[1] == (box_pos[1] - 1)):
+                left_agent = agent_idx
+            # right
+            elif (agent_pos[0] == box_pos[0]) and (agent_pos[1] == (box_pos[1] + 1)):
+                right_agent = agent_idx
         
-        # Check if at least 2 agents are taking the same action
-        action_counts = {}
-        for action in adjacent_actions:
-            action_counts[action] = action_counts.get(action, 0) + 1
-            
-        # Find the most common action
-        most_common_action = max(action_counts.items(), key=lambda x: x[1])
-        if most_common_action[1] >= 2:  # At least 2 agents taking the same action
-            # Check if the target position is free
-            dx, dy = self.grid_config.MOVES[most_common_action[0]]
-            target_pos = (box_pos[0] + dx, box_pos[1] + dy)
-            if not self.grid.has_obstacle(target_pos[0], target_pos[1]):
-                return True, most_common_action[0]
-                
-        return False, 0  # Return False and no-op action
-    def move_agents(self, actions):
-            """Modified movement logic to handle cooperative box movement."""
-            if self.grid.config.collision_system == 'priority':
-                # Then try to move boxes if possible
-                for box_idx in self.box_agent_indices:
-                    if self.grid.is_active[box_idx]:
-                        box_pos = self.grid.positions_xy[box_idx]
-                        can_move, box_action = self._can_move_box(box_pos, actions)
-                        if can_move:
-                            self.grid.move(box_idx, box_action)
-                # First move regular agents
-                for agent_idx in self.agent_indices:
-                    if self.grid.is_active[agent_idx]:
-                        self.grid.move(agent_idx, actions[agent_idx])
-            
-            else:
-                # For other collision systems, use the same logic but with box movement check
-                used_cells = {}
-                agents_xy = self.grid.get_agents_xy()
-                
-                # First process regular agents
-                for agent_idx in self.agent_indices:
-                    if self.grid.is_active[agent_idx]:
-                        x, y = agents_xy[agent_idx]
-                        dx, dy = self.grid_config.MOVES[actions[agent_idx]]
-                        used_cells[x + dx, y + dy] = 'blocked' if (x + dx, y + dy) in used_cells else 'visited'
-                        used_cells[x, y] = 'blocked'
-                
-                # Then try to move boxes
-                for box_idx in self.box_agent_indices:
-                    if self.grid.is_active[box_idx]:
-                        x, y = agents_xy[box_idx]
-                        can_move, box_action = self._can_move_box((x, y), actions)
-                        if can_move:
-                            dx, dy = self.grid_config.MOVES[box_action]
-                            used_cells[x + dx, y + dy] = 'blocked' if (x + dx, y + dy) in used_cells else 'visited'
-                            used_cells[x, y] = 'blocked'
-            
-                # Apply movements
-                for agent_idx in range(self.grid_config.num_agents):
-                    if self.grid.is_active[agent_idx]:
-                        x, y = agents_xy[agent_idx]
-                        if agent_idx in self.box_agent_indices:
-                            can_move, box_action = self._can_move_box((x, y), actions)
-                            if can_move:
-                                dx, dy = self.grid_config.MOVES[box_action]
-                                if used_cells.get((x + dx, y + dy), None) != 'blocked':
-                                    self.grid.move(agent_idx, box_action)
-                        else:
-                            dx, dy = self.grid_config.MOVES[actions[agent_idx]]
-                            if used_cells.get((x + dx, y + dy), None) != 'blocked':
-                                self.grid.move(agent_idx, actions[agent_idx])
+        return up_agent, down_agent, left_agent, right_agent
 
     def step(self, action: list):
         """Modified step function to handle box-specific rewards and termination."""
         assert len(action) == len(self.agent_indices)  # Actions only for regular agents
-        rewards = []
-        terminated = []
 
-        # Create full action list including boxes (boxes don't have actions)
-        full_actions = [0] * self.grid_config.num_agents  # Initialize with no-op actions
-        for i, agent_idx in enumerate(self.agent_indices):
-            full_actions[agent_idx] = action[i]
+        agents_moved = set()
+        for box_idx in self.box_agent_indices:
+            box_pos = self.grid.positions_xy[box_idx]
+            up_agent, down_agent, left_agent, right_agent = self._get_adjacent_agents(box_pos)
+            adj_agents_idx = [up_agent, down_agent, left_agent, right_agent]
 
-        # Store previous positions to check if boxes were moved
-        # prev_box_positions = {box_idx: self.grid.positions_xy[box_idx] for box_idx in self.box_agent_indices}
-        
-        self.move_agents(full_actions)
-        self.update_was_on_goal()
-# All boxes reaching their targets is the main goal
-        all_boxes_on_goal = all(self.grid.on_goal(box_idx) for box_idx in self.box_agent_indices)
-        
-        # Only return rewards for regular agents
-        for agent_idx in self.agent_indices:
-            if self.grid.is_active[agent_idx]:
-                agent_pos = self.grid.positions_xy[agent_idx]
-                reward = 0.0
-                
-                # Check if agent helped move any box to its goal
-                for box_idx in self.box_agent_indices:
+            if sum(x is not None for x in adj_agents_idx) >= 2:
+                adj_actions = list(action[idx] for idx in adj_agents_idx if idx is not None)
+
+                action_counts = {}
+                for action_ in adj_actions:
+                    if action_ not in action_counts:
+                        action_counts[action_] = 0
+                    action_counts[action_] += 1
+                most_common_action = max(action_counts.items(), key=lambda x: x[1])
+
+                if most_common_action[1] < 2 or most_common_action[0] == 0: # less than 2 agents or wait action
+                    continue
+
+                # up
+                if most_common_action[0] == 1:
+                    # up agent
+                    if up_agent is not None and action[up_agent] == 1:
+                        self.grid.move(up_agent, 1)
+                        agents_moved.add(up_agent)
+
+                    # box
                     if self.grid.is_active[box_idx]:
-                        box_pos = self.grid.positions_xy[box_idx]
-                        # prev_box_pos = prev_box_positions[box_idx]
-                        
-                        # If box is on goal and was moved this step
-                        if self.grid.on_goal(box_idx):
-                            # Check if agent was adjacent to box's previous position
-                            if agent_idx in self._get_adjacent_agents(box_pos):
-                                reward += 1.0  # Large reward for helping move box to goal
+                        self.grid.move(box_idx, 1)
+
+                    # other agents
+                    for agent_idx in [down_agent, left_agent, right_agent]:
+                        if agent_idx is not None and action[agent_idx] == 1:
+                            self.grid.move(agent_idx, 1)
+                            agents_moved.add(agent_idx)
                 
-                # Small reward for being adjacent to any box
-                adjacent_agents = self._get_adjacent_agents(agent_pos)
-                if any(idx in self.box_agent_indices for idx in adjacent_agents):
-                    reward += 0.1  # Small reward for being near a box
+                # down
+                elif most_common_action[0] == 2:
+                    # down agents
+                    if down_agent is not None and action[down_agent] == 2:
+                        self.grid.move(down_agent, 2)
+                        agents_moved.add(down_agent)
+
+                    # box
+                    if self.grid.is_active[box_idx]:
+                        self.grid.move(box_idx, 2)
+
+                    # other agents
+                    for agent_idx in [up_agent, left_agent, right_agent]:
+                        if agent_idx is not None and action[agent_idx] == 2:
+                            self.grid.move(agent_idx, 2)
+                            agents_moved.add(agent_idx)
                 
-                rewards.append(reward)
-            else:
-                rewards.append(0.0)
-            
-            # Episode terminates when all boxes reach their targets
-            terminated.append(all_boxes_on_goal)
+                # left
+                elif most_common_action[0] == 3:
+                    # left agent
+                    if left_agent is not None and action[left_agent] == 3:
+                        self.grid.move(left_agent, 3)
+                        agents_moved.add(left_agent)
+
+                    # box
+                    if self.grid.is_active[box_idx]:
+                        self.grid.move(box_idx, 3)
+
+                    # other agents
+                    for agent_idx in [up_agent, down_agent, right_agent]:
+                        if agent_idx is not None and action[agent_idx] == 3:
+                            self.grid.move(agent_idx, 3)
+                            agents_moved.add(agent_idx)
+                
+                # right
+                elif most_common_action[0] == 4:
+                    # right agent
+                    if right_agent is not None and action[right_agent] == 4:
+                        self.grid.move(right_agent, 4)
+                        agents_moved.add(right_agent)
+
+                    # box
+                    if self.grid.is_active[box_idx]:
+                        self.grid.move(box_idx, 4)
+
+                    # other agents
+                    for agent_idx in [up_agent, down_agent, left_agent]:
+                        if agent_idx is not None and action[agent_idx] == 4:
+                            self.grid.move(agent_idx, 4)
+                            agents_moved.add(agent_idx)
+                else:
+                    raise ValueError(f"Invalid action: {most_common_action[0]}")
+        
+        for agent_idx in self.agent_indices:
+            if agent_idx not in agents_moved:
+                self.grid.move(agent_idx, action[agent_idx])
+                agents_moved.add(agent_idx)
+        
+        # self.update_was_on_goal()
+
+        # All boxes reaching their targets is the main goal
+        all_boxes_on_goal = all(self.grid.on_goal(box_idx) for box_idx in self.box_agent_indices)
+
+        rewards = [0.0 for _ in range(len(self.agent_indices))]
+        for box_idx in self.box_agent_indices:
+            box_pos = self.grid.positions_xy[box_idx]
+            up_agent, down_agent, left_agent, right_agent = self._get_adjacent_agents(box_pos)
+
+            for agent_idx in [up_agent, down_agent, left_agent, right_agent]:
+                if agent_idx is not None:
+                    if self.grid.on_goal(box_idx):
+                        rewards[agent_idx] = 1.0
+                    else:
+                        rewards[agent_idx] = 0.1
 
         # Hide agents that reached their goals
         # for agent_idx in range(self.grid_config.num_agents):
@@ -193,12 +181,19 @@ class PogemaBox(Pogema):
         #         self.grid.hide_agent(agent_idx)
         #         self.grid.is_active[agent_idx] = False
 
+        # Hide boxes that reached their goals
+        for box_idx in self.box_agent_indices:
+            if self.grid.on_goal(box_idx):
+                self.grid.hide_agent(box_idx)
+
         infos = self._get_infos()
         observations = self._obs()
         # Filter observations to only include regular agents
         observations = [obs for i, obs in enumerate(observations) if i in self.agent_indices]
-        truncated = [False] * len(self.agent_indices)
+        terminated = all_boxes_on_goal
+        truncated = [False for _ in self.agent_indices]
         return observations, rewards, terminated, truncated, infos
+
     def _get_agents_obs(self, agent_id=0):
         """
         Returns the observation of the agent with the given id.
@@ -281,7 +276,8 @@ class PogemaBox(Pogema):
                     # Check if within observation window
                     if 0 <= local_x < 2*r + 1 and 0 <= local_y < 2*r + 1:
                         box_positions[local_x, local_y] = 1.0
-                    result = {
+
+            result = {
                 'obstacles': self.grid.get_obstacles_for_agent(agent_idx),
                 'agents': agent_positions,
                 'boxes': box_positions,
